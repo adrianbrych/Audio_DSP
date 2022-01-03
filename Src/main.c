@@ -19,6 +19,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "dma.h"
 #include "sai.h"
 #include "usart.h"
@@ -63,15 +64,18 @@ volatile uint32_t  audio_tx_buffer_state = 0;
 /* USER CODE BEGIN PV */
 int16_t RecordBuffer[RECORD_BUFFER_SIZE];
 int16_t PlaybackBuffer[RECORD_BUFFER_SIZE];
-uint8_t choice = 'a';
+uint8_t choice = 1;
+uint8_t komunikt[10];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 static uint8_t BSP_AUDIO_Init(uint32_t AudioFreq);
 uint8_t BSP_AUDIO_IN_Init(uint32_t AudioFreq, uint32_t BitRes, uint32_t ChnlNbr);
 uint8_t BSP_AUDIO_OUT_Init(uint16_t OutputDevice, uint8_t Volume, uint32_t AudioFreq);
+static uint8_t _BSP_AUDIO_OUT_Play(uint16_t* pBuffer, uint32_t Size);
 void AUDIO_LOOPBACK(void);
 static void SAI_AUDIO_IN_MspInit(SAI_HandleTypeDef *hsai, void *Params);
 static void SAIx_In_Init(uint32_t AudioFreq);
@@ -84,6 +88,69 @@ void get_max_val(int16_t *buf, uint32_t size, int16_t amp[]);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void recive_audio_task(void)
+{
+	vTaskDelay(1000/portTICK_RATE_MS);
+    HAL_StatusTypeDef res = HAL_SAI_Receive_DMA(&haudio_in_sai, (uint8_t*)RecordBuffer, RECORD_BUFFER_SIZE);
+    if (HAL_OK == res)
+    {
+   	 printf("SAI receive begin OK\r\n");
+    } else {
+        printf("SAI receive error: %d\r\n", res);
+    }
+
+    printf("Copying Record buffer to Playback buffer\r\n");
+
+    for(;;);
+
+
+}
+
+
+void transmit_audio_task(void)
+{
+         int16_t amp[4];
+
+         /* Play the recorded buffer */
+         if (_BSP_AUDIO_OUT_Play((uint16_t *) &PlaybackBuffer[0], RECORD_BUFFER_SIZE) == AUDIO_OK)
+         {
+        	 printf("Audio output OK\r\n");
+         } else {
+        	 printf("Audio output error\r\n");
+     	 }
+         printf("\r\n");
+
+         audio_rec_buffer_state = BUFFER_OFFSET_NONE;
+         while (1)
+         {
+             /* 1st or 2nd half of the record buffer ready for being copied
+             to the Playback buffer */
+             if (audio_rec_buffer_state != BUFFER_OFFSET_NONE)
+             {
+                 /* Copy half of the record buffer to the playback buffer */
+                 if (audio_rec_buffer_state == BUFFER_OFFSET_HALF)
+                 {
+                     get_max_val(RecordBuffer, RECORD_BUFFER_SIZE / 2, amp);
+                     CopyBuffer(&PlaybackBuffer[0], &RecordBuffer[0], RECORD_BUFFER_SIZE / 2);
+                 } else {
+                	 /* if(audio_rec_buffer_state == BUFFER_OFFSET_FULL)*/
+                     CopyBuffer(&PlaybackBuffer[RECORD_BUFFER_SIZE / 2],
+                    		      &RecordBuffer[RECORD_BUFFER_SIZE / 2],
+								                RECORD_BUFFER_SIZE / 2);
+                 }
+                 /* Wait for next data */
+                 audio_rec_buffer_state = BUFFER_OFFSET_NONE;
+             }
+             if (audio_tx_buffer_state)
+             {
+                 audio_tx_buffer_state = 0;
+             }
+         } // end while(1)
+ } // end AUDIO_LOOPBACK
+
+
+
+
 
 /* USER CODE END 0 */
 
@@ -94,7 +161,6 @@ void get_max_val(int16_t *buf, uint32_t size, int16_t amp[]);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -118,16 +184,25 @@ int main(void)
   MX_DMA_Init();
   MX_SAI1_Init();
   MX_USART1_UART_Init();
+  MX_FREERTOS_Init();
+  osKernelStart();
   /* USER CODE BEGIN 2 */
-  //HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
-  HAL_UART_Receive_IT(&huart1, &choice, 1);
 
-  BSP_AUDIO_IN_Init(SAI_AUDIO_FREQUENCY_192K, DEFAULT_AUDIO_IN_BIT_RESOLUTION, DEFAULT_AUDIO_IN_CHANNEL_NBR);
-  BSP_AUDIO_OUT_Init(OUTPUT_DEVICE_BOTH, 100, SAI_AUDIO_FREQUENCY_192K);
+
+  BSP_AUDIO_IN_Init(SAI_AUDIO_FREQUENCY_44K, DEFAULT_AUDIO_IN_BIT_RESOLUTION, DEFAULT_AUDIO_IN_CHANNEL_NBR);
+  BSP_AUDIO_OUT_Init(OUTPUT_DEVICE_BOTH, 100, SAI_AUDIO_FREQUENCY_44K);
   AUDIO_LOOPBACK();
-
+  xTaskCreate( recive_audio_task, "Recive_audio_task", 100, NULL, 1, NULL );
+  xTaskCreate( transmit_audio_task, "transmit_audio_task", 100, NULL, 1, NULL );
+  vTaskStartScheduler();
   /* USER CODE END 2 */
 
+  /* Call init function for freertos objects (in freertos.c) */
+
+  /* Start scheduler */
+
+
+  /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
@@ -284,7 +359,7 @@ void AUDIO_LOOPBACK(void)
          }
 
          /* Start Recording */
-         HAL_StatusTypeDef res = HAL_SAI_Receive_DMA(&haudio_in_sai, (uint8_t*)RecordBuffer, RECORD_BUFFER_SIZE);
+         /*HAL_StatusTypeDef res = HAL_SAI_Receive_DMA(&haudio_in_sai, (uint8_t*)RecordBuffer, RECORD_BUFFER_SIZE);
          if (HAL_OK == res)
          {
         	 printf("SAI receive begin OK\r\n");
@@ -293,42 +368,9 @@ void AUDIO_LOOPBACK(void)
          }
 
          printf("Copying Record buffer to Playback buffer\r\n");
-
+			*/
          /* Play the recorded buffer */
-         if (_BSP_AUDIO_OUT_Play((uint16_t *) &PlaybackBuffer[0], RECORD_BUFFER_SIZE) == AUDIO_OK)
-         {
-        	 printf("Audio output OK\r\n");
-         } else {
-        	 printf("Audio output error\r\n");
-     	 }
-         printf("\r\n");
-
-         audio_rec_buffer_state = BUFFER_OFFSET_NONE;
-         while (1)
-         {
-             /* 1st or 2nd half of the record buffer ready for being copied
-             to the Playback buffer */
-             if (audio_rec_buffer_state != BUFFER_OFFSET_NONE)
-             {
-                 /* Copy half of the record buffer to the playback buffer */
-                 if (audio_rec_buffer_state == BUFFER_OFFSET_HALF)
-                 {
-                     get_max_val(RecordBuffer, RECORD_BUFFER_SIZE / 2, amp);
-                     CopyBuffer(&PlaybackBuffer[0], &RecordBuffer[0], RECORD_BUFFER_SIZE / 2);
-                 } else {
-                	 /* if(audio_rec_buffer_state == BUFFER_OFFSET_FULL)*/
-                     CopyBuffer(&PlaybackBuffer[RECORD_BUFFER_SIZE / 2],
-                    		      &RecordBuffer[RECORD_BUFFER_SIZE / 2],
-								                RECORD_BUFFER_SIZE / 2);
-                 }
-                 /* Wait for next data */
-                 audio_rec_buffer_state = BUFFER_OFFSET_NONE;
-             }
-             if (audio_tx_buffer_state)
-             {
-                 audio_tx_buffer_state = 0;
-             }
-         } // end while(1)
+         	// end while(1)
  } // end AUDIO_LOOPBACK
 
 static void CopyBuffer(int16_t *pbuffer1, int16_t *pbuffer2, uint16_t BufferSize)
@@ -527,7 +569,11 @@ static void SAI_AUDIO_IN_MspInit(SAI_HandleTypeDef *hsai, void *Params)
        HAL_NVIC_EnableIRQ(AUDIO_IN_INT_IRQ);
    }
 
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
 
+
+}
 
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -537,12 +583,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		if(choice == 'a')
 		{
 			HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_SET);
+			sprintf(komunikt,"DIODA ON");
 		}
 		else
 		{
 			HAL_GPIO_WritePin(GPIOI, GPIO_PIN_1, GPIO_PIN_RESET);
+			sprintf(komunikt,"DIODA OFF");
 		}
-
+		HAL_UART_Transmit_IT(&huart1, komunikt, 10);
 		HAL_UART_Receive_IT(&huart1, &choice, 1);
 	}
 
